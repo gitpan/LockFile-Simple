@@ -1,85 +1,35 @@
-;# $Id$
+;# $Id
 ;#
-;#  @COPYRIGHT@
+;#  Copyright (c) 1998, Raphael Manfredi
+;#  
+;#  You may redistribute only under the terms of the Artistic License,
+;#  as specified in the README file that comes with the distribution.
 ;#
 ;# $Log: Simple.pm,v $
-;# Revision 0.4  2007/09/28 19:22:05  jv
-;# Bump version.
+;# Revision 0.1.1.1  1998/05/12  07:42:19  ram
+;# patch1: Baseline for first alpha release.
 ;#
-;# Revision 0.3  2007/09/28 19:19:41  jv
-;# Revision 0.2.1.5  2000/09/18 19:55:07  ram
-;# patch5: fixed computation of %F and %D when no '/' in file name
-;# patch5: fixed OO example of lock to emphasize check on returned value
-;# patch5: now warns when no lockfile is found during unlocking
-;#
-;# Revision 0.2.1.4  2000/08/15 18:41:43  ram
-;# patch4: updated version number, grrr...
-;#
-;# Revision 0.2.1.3  2000/08/15 18:37:37  ram
-;# patch3: fixed non-working "-wfunc => undef" due to misuse of defined()
-;# patch3: check for stale lock while we wait for it
-;# patch3: untaint pid before running kill() for -T scripts
-;#
-;# Revision 0.2.1.2  2000/03/02 22:35:02  ram
-;# patch2: allow "undef" in -efunc and -wfunc to suppress logging
-;# patch2: documented how to force warn() despite Log::Agent being there
-;#
-;# Revision 0.2.1.1  2000/01/04 21:18:10  ram
-;# patch1: logerr and logwarn are autoloaded, need to check something real
-;# patch1: forbid re-lock of a file we already locked
-;# patch1: force $\ to be undef prior to writing the PID to lockfile
-;# patch1: track where lock was issued in the code
-;#
-;# Revision 0.2.1.5  2000/09/18 19:55:07  ram
-;# patch5: fixed computation of %F and %D when no '/' in file name
-;# patch5: fixed OO example of lock to emphasize check on returned value
-;# patch5: now warns when no lockfile is found during unlocking
-;#
-;# Revision 0.2.1.4  2000/08/15 18:41:43  ram
-;# patch4: updated version number, grrr...
-;#
-;# Revision 0.2.1.3  2000/08/15 18:37:37  ram
-;# patch3: fixed non-working "-wfunc => undef" due to misuse of defined()
-;# patch3: check for stale lock while we wait for it
-;# patch3: untaint pid before running kill() for -T scripts
-;#
-;# Revision 0.2.1.2  2000/03/02 22:35:02  ram
-;# patch2: allow "undef" in -efunc and -wfunc to suppress logging
-;# patch2: documented how to force warn() despite Log::Agent being there
-;#
-;# Revision 0.2.1.1  2000/01/04 21:18:10  ram
-;# patch1: logerr and logwarn are autoloaded, need to check something real
-;# patch1: forbid re-lock of a file we already locked
-;# patch1: force $\ to be undef prior to writing the PID to lockfile
-;# patch1: track where lock was issued in the code
-;#
-;# Revision 0.2  1999/12/07 20:51:05  ram
-;# Baseline for 0.2 release.
-;#
-
-use strict;
 
 ########################################################################
-package LockFile::Simple;
+package LockFile::Simple; @ISA = qw(Exporter);
 
 #
 # This package extracts the simple locking logic used by mailagent-3.0
 # into a standalone Perl module to be reused in other applications.
 #
 
+use strict;
 use vars qw($VERSION @ISA @EXPORT @EXPORT_OK);
-
 use Sys::Hostname;
+
 require Exporter;
-require LockFile::Lock::Simple;
-eval "use Log::Agent";
 
 @ISA = qw(Exporter);
 @EXPORT = ();
 @EXPORT_OK = qw(lock trylock unlock);
-$VERSION = '0.208';
+$VERSION = '0.102';
 
-my $LOCKER = undef;			# Default locking object
+$LockFile::Simple::LOCKER = undef;	# Default locking object
 
 #
 # ->make
@@ -90,24 +40,16 @@ my $LOCKER = undef;			# Default locking object
 #
 # Configuration attributes:
 #
-#	autoclean		keep track of locks and release pending one at END time
 #   max				max number of attempts
 #	delay			seconds to wait between attempts
 #	format			how to derive lockfile from file to be locked
 #	hold			max amount of seconds before breaking lock (0 for never)
 #	ext				lock extension
 #	nfs				true if lock must "work" on top of NFS
-#	stale			try to detect stale locks via SIGZERO and delete them
 #	warn			flag to turn warnings on
 #	wmin			warn once after that many waiting seconds
 #	wafter			warn every that many seconds after first warning
 #	wfunc			warning function to be called
-#	efunc			error function to be called
-#
-# Additional attributes:
-#
-#	manager			lock manager, used when autoclean
-#	lock_by_file	returns lock by filename
 #
 # The creation routine first and sole argument is a "hash table list" listing
 # all the configuration attributes. Missing attributes are given a default
@@ -117,35 +59,20 @@ my $LOCKER = undef;			# Default locking object
 sub make {
 	my $self = bless {}, shift;
 	my (@hlist) = @_;
+	$self->configure(@hlist);
 
-	# Set configuration defaults, then override with user preferences
-	$self->{'max'} = 30;
-	$self->{'delay'} = 2;
-	$self->{'hold'} = 3600;
-	$self->{'ext'} = '.lock';
-	$self->{'nfs'} = 0;
-	$self->{'stale'} = 0;
-	$self->{'warn'} = 1;
-	$self->{'wmin'} = 15;
-	$self->{'wafter'} = 20;
-	$self->{'autoclean'} = 0;
-	$self->{'lock_by_file'} = {};
+	# Set configuration defaults
+	$self->{'max'} = 30 unless $self->{'max'};
+	$self->{'delay'} = 2 unless $self->{'delay'};
+	$self->{'hold'} = 3600 unless $self->{'hold'};
+	$self->{'ext'} = '.lock' unless defined $self->{'ext'};
+	$self->{'nfs'} = 0 unless defined $self->{'nfs'};
+	$self->{'warn'} = 1 unless defined $self->{'warn'};
+	$self->{'wfunc'} = \&core_warn unless defined $self->{'wfunc'};
+	$self->{'wmin'} = 15 unless $self->{'wmin'};
+	$self->{'wafter'} = 20 unless $self->{'wafter'};
 
-	# The logxxx routines are autoloaded, so need to check for @EXPORT
-	$self->{'wfunc'} = @Log::Agent::EXPORT ? \&logwarn : \&core_warn;
-	$self->{'efunc'} = @Log::Agent::EXPORT ?  \&logerr  : \&core_warn;
-
-	$self->configure(@hlist);		# Will init "manager" if necessary
 	return $self;
-}
-
-#
-# ->locker		-- "once" function
-#
-# Compute the default locking object.
-#
-sub locker {
-	return $LOCKER || ($LOCKER = LockFile::Simple->make('-warn' => 1));
 }
 
 #
@@ -159,23 +86,9 @@ sub locker {
 sub configure {
 	my $self = shift;
 	my (%hlist) = @_;
-	my @known = qw(
-		autoclean
-		max delay hold format ext nfs warn wfunc wmin wafter efunc stale
-	);
-
+	my @known = qw(max delay hold format ext nfs warn wfunc wmin wafter);
 	foreach my $attr (@known) {
-		$self->{$attr} = $hlist{"-$attr"} if exists $hlist{"-$attr"};
-	}
-
-	$self->{'wfunc'} = \&no_warn unless defined $self->{'wfunc'};
-	$self->{'efunc'} = \&no_warn unless defined $self->{'efunc'};
-
-	if ($self->autoclean) {
-		require LockFile::Manager;
-		# Created via "once" function
-		$self->{'manager'} = LockFile::Manager->manager(
-			$self->wfunc, $self->efunc);
+		$self->{$attr} = $hlist{"-$attr"} if defined $hlist{"-$attr"};
 	}
 }
 
@@ -183,35 +96,25 @@ sub configure {
 # Attribute access
 #
 
-sub max				{ $_[0]->{'max'} }
-sub delay			{ $_[0]->{'delay'} }
-sub format			{ $_[0]->{'format'} }
-sub hold			{ $_[0]->{'hold'} }
-sub nfs				{ $_[0]->{'nfs'} }
-sub stale			{ $_[0]->{'stale'} }
-sub ext				{ $_[0]->{'ext'} }
-sub warn			{ $_[0]->{'warn'} }
-sub wmin			{ $_[0]->{'wmin'} }
-sub wafter			{ $_[0]->{'wafter'} }
-sub wfunc			{ $_[0]->{'wfunc'} }
-sub efunc			{ $_[0]->{'efunc'} }
-sub autoclean		{ $_[0]->{'autoclean'} }
-sub lock_by_file	{ $_[0]->{'lock_by_file'} }
-sub manager			{ $_[0]->{'manager'} }
-
-#
-# Warning and error reporting -- Log::Agent used only when available
-#
+sub max			{ $_[0]->{'max'} }
+sub delay		{ $_[0]->{'delay'} }
+sub format		{ $_[0]->{'format'} }
+sub hold		{ $_[0]->{'hold'} }
+sub nfs			{ $_[0]->{'nfs'} }
+sub ext			{ $_[0]->{'ext'} }
+sub warn		{ $_[0]->{'warn'} }
+sub wmin		{ $_[0]->{'wmin'} }
+sub wafter		{ $_[0]->{'wafter'} }
+sub wfunc		{ $_[0]->{'wfunc'} }
 
 sub core_warn	{ CORE::warn(@_) }
-sub no_warn		{ return }
 
 #
 # ->lock
 #
 # Lock specified file, possibly using alternate file "format".
 # Returns whether file was locked or not at the end of the configured
-# blocking period by providing the LockFile::Lock instance if successful.
+# blocking period.
 #
 # For quick and dirty scripts wishing to use locks, create the locking
 # object if not invoked as a method, turning on warnings.
@@ -220,18 +123,18 @@ sub lock {
 	my $self = shift;
 	unless (ref $self) {			# Not invoked as a method
 		unshift(@_, $self);
-		$self = locker();
+		$self = $LockFile::Simple::LOCKER ||
+			LockFile::Simple->make('-warn' => 1);
 	}
 	my ($file, $format) = @_;		# File to be locked, lock format
-	return $self->take_lock($file, $format, 0);
+	return $self->_acs_lock($file, $format, 0);
 }
 
 #
 # ->trylock
 #
 # Attempt to lock specified file, possibly using alternate file "format".
-# If the file is already locked, don't block and return undef. The
-# LockFile::Lock instance is returned upon success.
+# If the file is already locked, don't block and return false.
 #
 # For quick and dirty scripts wishing to use locks, create the locking
 # object if not invoked as a method, turning on warnings.
@@ -240,48 +143,11 @@ sub trylock {
 	my $self = shift;
 	unless (ref $self) {			# Not invoked as a method
 		unshift(@_, $self);
-		$self = locker();
+		$self = $LockFile::Simple::LOCKER ||
+			LockFile::Simple->make('-warn' => 1);
 	}
 	my ($file, $format) = @_;		# File to be locked, lock format
-	return $self->take_lock($file, $format, 1);
-}
-
-#
-# ->take_lock
-#
-# Common code for ->lock and ->trylock.
-# Returns a LockFile::Lock object on success, undef on failure.
-#
-sub take_lock {
-	my $self = shift;
-	my ($file, $format, $tryonly) = @_;
-
-	#
-	# If lock was already taken by us, it's an error when $tryonly is 0.
-	# Otherwise, simply fail to get the lock.
-	#
-
-	my $lock = $self->lock_by_file->{$file};
-	if (defined $lock) {
-		my $where = $lock->where;
-		&{$self->efunc}("file $file already locked at $where") unless $tryonly;
-		return undef;
-	}
-
-	my $locked = $self->_acs_lock($file, $format, $tryonly);
-	return undef unless $locked;
-
-	#
-	# Create LockFile::Lock object
-	#
-
-	my ($package, $filename, $line) = caller(1);
-	$lock = LockFile::Lock::Simple->make($self, $file, $format,
-		$filename, $line);
-	$self->manager->remember($lock) if $self->autoclean;
-	$self->lock_by_file->{$file} = $lock;
-
-	return $lock;
+	return $self->_acs_lock($file, $format, 1);
 }
 
 #
@@ -294,44 +160,10 @@ sub unlock {
 	my $self = shift;
 	unless (ref $self) {			# Not invoked as a method
 		unshift(@_, $self);
-		$self = locker();
+		$self = $LockFile::Simple::LOCKER ||
+			LockFile::Simple->make('-warn' => 1);
 	}
 	my ($file, $format) = @_;		# File to be unlocked, lock format
-
-	if (defined $format) {
-		require Carp;
-		Carp::carp("2nd argument (format) is no longer needed nor used");
-	}
-
-	#
-	# Retrieve LockFile::Lock object
-	#
-
-	my $lock = $self->lock_by_file->{$file};
-
-	unless (defined $lock) {
-		&{$self->efunc}("file $file not currently locked");
-		return undef;
-	}
-
-	return $self->release($lock);
-}
-
-#
-# ->release			-- not exported (i.e. not documented)
-#
-# Same a unlock, but we're passed a LockFile::Lock object.
-# And we MUST be called as a method (usually via LockFile::Lock, not user code).
-#
-# Returns true if file was unlocked.
-#
-sub release {
-	my $self = shift;
-	my ($lock) = @_;
-	my $file = $lock->file;
-	my $format = $lock->format;
-	$self->manager->forget($lock) if $self->autoclean;
-	delete $self->lock_by_file->{$file};
 	return $self->_acs_unlock($file, $format);
 }
 
@@ -365,14 +197,14 @@ sub lockfile {
 sub base {
 	my ($file) = @_;
 	my ($base) = $file =~ m|^.*/(.*)|;
-	return ($base eq '') ? $file : $base;
+	$base;
 }
 
 # Return dirname
 sub dir {
 	my ($file) = @_;
 	my ($dir) = $file =~ m|^(.*)/.*|;
-	return ($dir eq '') ? '.' : $dir;
+	$dir;
 }
 
 #
@@ -391,15 +223,14 @@ sub _acs_lock {		## private
 	my $stamp = $$;
 
 	# For NFS, we need something more unique than the process's PID
-	$stamp .= ':' . hostname if $self->nfs;
+	$stamp .= hostname if $self->nfs;
 
 	# Compute locking file name -- hardwired default format is "%f.lock"
 	my $lockfile = $file . $self->ext;
 	$format = $self->format unless defined $format;
 	$lockfile = $self->lockfile($file, $format) if defined $format;
 
-	# Detect stale locks or break lock if held for too long
-	$self->_acs_stale($file, $lockfile) if $self->stale;
+	# Break lock if held for too long
 	$self->_acs_check($file, $lockfile) if $self->hold;
 
 	my $waited = 0;					# Amount of time spent sleeping
@@ -421,7 +252,6 @@ sub _acs_lock {		## private
 
 		# Attempt to create lock
 		if (open(FILE, ">$lockfile")) {
-			local $\ = undef;
 			print FILE "$stamp\n";
 			close FILE;
 			open(FILE, $lockfile);	# Check lock
@@ -449,13 +279,9 @@ sub _acs_lock {		## private
 			my $waiting  = $lastwarn ? 'still waiting' : 'waiting';
 			my $after  = $lastwarn ? 'after' : 'since';
 			my $s = $waited == 1 ? '' : 's';
-			&$wfunc("$waiting for $file lock $after $waited second$s");
+			&$wfunc("WARNING $waiting for $file lock $after $waited second$s");
 			$lastwarn = $waited;
 		}
-
-		# While we wait, existing lockfile may become stale or too old
-		$self->_acs_stale($file, $lockfile) if $self->stale;
-		$self->_acs_check($file, $lockfile) if $self->hold;
 	}
 
 	umask($mask);
@@ -474,7 +300,7 @@ sub _acs_unlock {	## private
 	my $self = shift;
 	my ($file, $format) = @_;		# Locked file, locking format
 	my $stamp = $$;
-	$stamp .= ':' . hostname if $self->nfs;
+	$stamp .= hostname if $self->nfs;
 
 	# Compute locking file name -- hardwired default format is "%f.lock"
 	my $lockfile = $file . $self->ext;
@@ -489,18 +315,15 @@ sub _acs_unlock {	## private
 		my $l;
 		chop($l = <FILE>);
 		close FILE;
-		if ($l eq $stamp) {			# Pid (plus hostname possibly) is OK
+		if ($l eq $stamp) {			 # Pid (plus hostname possibly) is OK
 			$unlocked = 1;
-			unless (unlink $lockfile) {
-				$unlocked = 0;
-				&{$self->efunc}("cannot unlock $file: $!");
-			}
-		} else {
-			&{$self->efunc}("cannot unlock $file: lock not owned");
+			unlink $lockfile or $unlocked = 0;
 		}
-	} else {
-		&{$self->wfunc}("no lockfile found for $file");
 	}
+
+	# It's reasonable to expect $! to be meaningful at this point
+	&{$self->wfunc}("WARNING did not unlock $file: $!")
+		if !$unlocked && $self->warn;
 
 	return $unlocked;				# Did we successfully unlock?
 }
@@ -511,78 +334,23 @@ sub _acs_unlock {	## private
 # Make sure lock lasts only for a reasonable time. If it has expired,
 # then remove the lockfile.
 #
-# This is not enabled by default because there is a race condition between
-# the time we stat the file and the time we unlink the lockfile.
-#
 sub _acs_check {
 	my $self = shift;
 	my ($file, $lockfile) = @_;
+	return unless -f $lockfile;
 
 	my $mtime = (stat($lockfile))[9];
-	return unless defined $mtime;	# Assume file does not exist
 	my $hold = $self->hold;
 
 	# If file too old to be considered stale?
 	if ((time - $mtime) > $hold) {
-
-		# RACE CONDITION -- shall we lock the lockfile?
-
-		unless (unlink $lockfile) {
-			&{$self->efunc}("cannot unlink $lockfile: $!");
-			return;
-		}
-
+		unlink $lockfile;
 		if ($self->warn) {
+			$file =~ s|.*/(.*)|$1|;	# Keep only basename
 			my $s = $hold == 1 ? '' : 's';
 			&{$self->wfunc}("UNLOCKED $file (lock older than $hold second$s)");
 		}
 	}
-}
-
-#
-# ->_acs_stale
-#
-# Detect stale locks and remove them. This works by sending a SIGZERO to
-# the pid held in the lockfile. If configured for NFS, only processes
-# on the same host than the one holding the lock will be able to perform
-# the check.
-#
-# Stale lock detection is not enabled by default because there is a race
-# condition between the time we check for the pid, and the time we unlink
-# the lockfile: we could well be unlinking a new lockfile created inbetween.
-#
-sub _acs_stale {
-	my $self = shift;
-	my ($file, $lockfile) = @_;
-
-	local *FILE;
-	open(FILE, $lockfile) || return;
-	my $stamp;
-	chop($stamp = <FILE>);
-	close FILE;
-
-	my ($pid, $hostname);
-
-	if ($self->nfs) {
-		($pid, $hostname) = $stamp =~ /^(\d+):(\S+)/;
-		my $local = hostname;
-		return if $local ne $hostname;
-		return if kill 0, $pid;
-		$hostname = " on $hostname";
-	} else {
-		($pid) = $stamp =~ /^(\d+)$/;		# Untaint $pid for kill()
-		$hostname = '';
-		return if kill 0, $pid;
-	}
-
-	# RACE CONDITION -- shall we lock the lockfile?
-
-	unless (unlink $lockfile) {
-		&{$self->efunc}("cannot unlink stale $lockfile: $!");
-		return;
-	}
-
-	&{$self->wfunc}("UNLOCKED $file (stale lock by PID $pid$hostname)");
 }
 
 1;
@@ -611,10 +379,6 @@ LockFile::Simple - simple file locking scheme
  $lockmgr->unlock("/some/file");
 
  $lockmgr->configure(-nfs => 0);
-
- # Using lock handles
- my $lock = $lockmgr->lock("/some/file");
- $lock->release;
 
 =head1 DESCRIPTION
 
@@ -660,25 +424,10 @@ listed in alphabetical order:
 
 =over 4
 
-=item I<autoclean>
-
-When true, all locks are remembered and pending ones are automatically
-released when the process exits normally (i.e. whenever Perl calls the
-END routines).
-
 =item I<delay>
 
 The amount of seconds to wait between locking attempts when the file appears
 to be already locked. Default is 2 seconds.
-
-=item I<efunc>
-
-A function pointer to dereference when an error is to be reported. By default,
-it redirects to the logerr() routine if you have Log::Agent installed,
-to Perl's warn() function otherwise.
-
-You may set it explicitely to C<\&LockFile::Simple::core_warn> to force the
-use of Perl's warn() function, or to C<undef> to suppress logging.
 
 =item I<ext>
 
@@ -694,11 +443,11 @@ specified is run through a rudimentary macro expansion to derive the
 I<lockfile> path from the file to be locked. The following macros are
 available:
 
-    %%	A real % sign
-    %f	The full file path name
-    %D	The directory where the file resides
-    %F	The base name of the file
-    %p	The process ID (PID)
+	%%	A real % sign
+	%f	The full file path name
+	%D	The directory where the file resides
+	%F	The base name of the file
+	%p	The process ID (PID)
 
 The default is to use the locking extension, which itself is C<.lock>, so
 it is as if the format used was C<%f.lock>, but one could imagine things
@@ -706,7 +455,20 @@ like C</var/run/%F.%p>, i.e. the I<lockfile> does not necessarily lie besides
 the locked file (which could even be missing).
 
 When locking, the locking format can be specified to supersede the object
-configuration itself.
+configuration itself. Be sure to use the same locking format when unlocking!
+For instance, you can say:
+
+	$obj->lock('ppp', '/var/run/ppp.%p');
+	$obj->configure(-format => '/var/run/ppp.%p');
+	$obj->unlock('ppp');	# Okay, since format changed
+
+This also works when the calling C<lock()> without an object, and this is
+where it is most useful since in that case you have no object to configure!
+The example above becomes:
+
+	lock('ppp', '/var/run/ppp.%p');    # file ppp may not even exist!
+	<do whatever>
+	unlock('ppp', '/var/run/ppp.%p');  # MUST specify here
 
 =item I<hold>
 
@@ -725,11 +487,6 @@ A boolean flag, false by default. Setting it to true means we could lock
 over NFS and therefore the hostname must be included along with the process
 ID in the stamp written to the lockfile.
 
-=item I<stale>
-
-A boolean flag, false by default. When set to true, we attempt to detect
-stale locks and break them if necessary.
-
 =item I<wafter>
 
 Stands for I<warn after>. It is the number of seconds past the first
@@ -743,11 +500,7 @@ A boolean flag, true by default. To suppress any warning, set it to false.
 =item I<wfunc>
 
 A function pointer to dereference when a warning is to be issued. By default,
-it redirects to the logwarn() routine if you have Log::Agent installed,
-to Perl's warn() function otherwise.
-
-You may set it explicitely to C<\&LockFile::Simple::core_warn> to force the
-use of Perl's warn() function, or to C<undef> to suppress logging.
+it points to Perl's C<warn()> function.
 
 =item I<wmin>
 
@@ -759,13 +512,13 @@ be emitted every I<wafter> seconds. Defaults to 15.
 
 Each of those configuration attributes can be queried on the object directly:
 
-    $obj = LockFile::Simple->make(-nfs => 1);
-    $on_nfs = $obj->nfs;
+	$obj = LockFile::Simple->make(-nfs => 1);
+	$on_nfs = $obj->nfs;
 
 Those are pure query routines, i.e. you cannot say:
 
-    $obj->nfs(0);                  # WRONG
-    $obj->configure(-nfs => 0);    # Right
+	$obj->nfs(0);			# WRONG
+	$obj->configure(-nfs => 0);	# Right
 
 to turn of the NFS attribute. That is because my OO background chokes
 at having querying functions with side effects.
@@ -804,27 +557,7 @@ I<lockfile> is checked for being too old, and it is removed if found
 to be stale. A warning is emitted via the I<wfunc> routine in that
 case, if allowed.
 
-Likewise, if I<stale> is non-zero, a check is made to see whether
-any locking process is still around (only if the lock holder is on the
-same machine when NFS locking is configured). Should the locking
-process be dead, the I<lockfile> is declared stale and removed.
-
-Returns a lock handle if the file has been successfully locked, which
-does not necessarily needs to be kept around. For instance:
-
-    $obj->lock('ppp', '/var/run/ppp.%p');
-    <do some work>
-    $obj->unlock('ppp');
-
-or, using OO programming:
-
-    my $lock = $obj->lock('ppp', '/var/run/ppp.%p') ||;
-        die "Can't lock for ppp\n";
-    <do some work>
-    $lock->relase;   # The only method defined for a lock handle
-
-i.e. you don't even have to know which file was locked to release it, since
-there is a lock handle right there that knows enough about the lock parameters.
+Returns true if the file has been successfully locked.
 
 =item lockfile(I<file>, I<format>)
 
@@ -842,11 +575,12 @@ Same as I<lock> except that it immediately returns false and does not
 sleep if the to-be-locked file is busy, i.e. already locked. Any
 stale locking file is removed, as I<lock> would do anyway.
 
-Returns a lock hande if the file has been successfully locked.
+Returns true if the file has been successfully locked.
 
-=item unlock(I<file>)
+=item unlock(I<file>, I<format>)
 
-Unlock the I<file>.
+Unlock the I<file>. If the optional I<format> parameter is given, it
+must be the same as the one that was used at I<lock> time.
 
 =back
 
@@ -859,15 +593,9 @@ The sysopen() call should probably be used with the C<O_EXCL|O_CREAT> flags
 to be on the safer side. Still, over NFS, this is not an atomic operation
 anyway.
 
-B<BEWARE>: there is a race condition between the time we decide a lock is
-stale or too old and the time we unlink it. Don't use C<-stale> and set
-C<-hold> to 0 if you can't bear with that idea, but recall that this race
-only happens when something is already wrong. That does not make it right,
-nonetheless. ;-)
-
 =head1 AUTHOR
 
-Raphael Manfredi F<E<lt>Raphael_Manfredi@pobox.comE<gt>>
+Raphael Manfredi F<E<lt>Raphael_Manfredi@grenoble.hp.comE<gt>>
 
 =head1 SEE ALSO
 
